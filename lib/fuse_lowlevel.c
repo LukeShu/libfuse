@@ -2518,7 +2518,7 @@ static void fuse_ll_help(void)
 "    -o sync_read           perform reads synchronously\n"
 "    -o atomic_o_trunc      enable atomic open+truncate support\n"
 "    -o big_writes          enable larger than 4kB writes\n"
-"    -o no_remote_lock      disable remote file locking\n"
+"    -o no_remote_lock      same as -o no_remote_flock,no_remote_posix_lock"
 "    -o no_remote_flock     disable remote file locking (BSD)\n"
 "    -o no_remote_posix_lock disable remove file locking (POSIX)\n"
 "    -o [no_]splice_write   use splice to write to the fuse device\n"
