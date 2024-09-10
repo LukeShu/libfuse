@@ -101,12 +101,10 @@ AM_CONDITIONAL(BSD, test "$arch" = bsd)
 util_linux_ok=yes
 if test "$arch" = linux -a "$cross_compiling" != "yes"; then
 	AC_MSG_CHECKING([if umount supports --fake --no-canonicalize])
-	# exit code of umount is 1 if option is unrecognised, 2 otherwise
-	umount --fake --no-canonicalize > /dev/null 2>&1
-	if test $? != 1; then
+	if umount --fake --no-canonicalize dir >/dev/null 2>&1; then
 		AC_MSG_RESULT([yes])
 	else
-		firstline=`umount --fake --no-canonicalize 2>&1 | head -1`
+		firstline=`umount --fake --no-canonicalize dir 2>&1 | head -1`
 		if test "$firstline" = 'umount: only root can use "--fake" option'; then
 			AC_MSG_RESULT([yes])
 		else
