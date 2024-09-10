@@ -10,74 +10,35 @@
 #include "fuse_i.h"
 #include "fuse_misc.h"
 #include "fuse_opt.h"
+#include "fuse_optdoc.h"
 #include "fuse_lowlevel.h"
 #include "fuse_common_compat.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <stddef.h>
+#include <stdbool.h>
 #include <unistd.h>
 #include <string.h>
 #include <limits.h>
 #include <errno.h>
 #include <sys/param.h>
 
-enum  {
-	KEY_HELP,
-	KEY_HELP_NOHEADER,
-	KEY_VERSION,
-};
-
 struct helper_opts {
-	int singlethread;
-	int foreground;
-	int nodefault_subtype;
+	bool singlethread;
+	bool foreground;
+	bool nodefault_subtype;
 	char *mountpoint;
-};
-
-#define FUSE_HELPER_OPT(t, p) { t, offsetof(struct helper_opts, p), 1 }
-
-static const struct fuse_opt fuse_helper_opts[] = {
-	FUSE_HELPER_OPT("-d",		foreground),
-	FUSE_HELPER_OPT("debug",	foreground),
-	FUSE_HELPER_OPT("-f",		foreground),
-	FUSE_HELPER_OPT("-s",		singlethread),
-	FUSE_HELPER_OPT("fsname=",	nodefault_subtype),
-	FUSE_HELPER_OPT("subtype=",	nodefault_subtype),
-
-	FUSE_OPT_KEY("-h",		KEY_HELP),
-	FUSE_OPT_KEY("--help",		KEY_HELP),
-	FUSE_OPT_KEY("-ho",		KEY_HELP_NOHEADER),
-	FUSE_OPT_KEY("-V",		KEY_VERSION),
-	FUSE_OPT_KEY("--version",	KEY_VERSION),
-	FUSE_OPT_KEY("-d",		FUSE_OPT_KEY_KEEP),
-	FUSE_OPT_KEY("debug",		FUSE_OPT_KEY_KEEP),
-	FUSE_OPT_KEY("fsname=",		FUSE_OPT_KEY_KEEP),
-	FUSE_OPT_KEY("subtype=",	FUSE_OPT_KEY_KEEP),
-	FUSE_OPT_END
 };
 
 static void usage(const char *progname)
 {
 	fprintf(stderr,
 		"usage: %s mountpoint [options]\n\n", progname);
-	fprintf(stderr,
-		"general options:\n"
-		"    -o opt,[opt...]        mount options\n"
-		"    -h   --help            print help\n"
-		"    -V   --version         print version\n"
-		"\n");
-}
-
-static void helper_help(void)
-{
-	fprintf(stderr,
-		"FUSE options:\n"
-		"    -d   -o debug          enable debug output (implies -f)\n"
-		"    -f                     foreground operation\n"
-		"    -s                     disable multi-threaded operation\n"
-		"\n"
-		);
+	fprintf(stderr, "general options:\n");
+	OPTDOC_PRINT1("-o opt,[opt...]",         "mount options");
+	OPTDOC_PRINT2("-h", "--help",            "print help");
+	OPTDOC_PRINT2("-V", "--version",         "print version");
 }
 
 static void helper_version(void)
@@ -85,26 +46,28 @@ static void helper_version(void)
 	fprintf(stderr, "FUSE library version: %s\n", PACKAGE_VERSION);
 }
 
-static int fuse_helper_opt_proc(void *data, const char *arg, int key,
-				struct fuse_args *outargs)
-{
-	struct helper_opts *hopts = data;
-
-	switch (key) {
-	case KEY_HELP:
+OPTDOC_GOPTS(fuse_helper, struct helper_opts,
+	OPTDOC_GOPT_HELP(NOHELP,
 		usage(outargs->argv[0]);
-		/* fall through */
+		printf("FUSE daemon options:\n");
+		fuse_helper_opt_help();
+	),
+	OPTDOC_GOPT_FLAG("-ho", NOHELP, DISCARD,
+		printf("FUSE daemon options:\n");
+		fuse_helper_opt_help();
+		if (fuse_opt_add_arg(outargs, "-h") < 0)
+			return -1;
+	),
+	OPTDOC_GOPT_VERSION(NOHELP, helper_version();),
 
-	case KEY_HELP_NOHEADER:
-		helper_help();
-		return fuse_opt_add_arg(outargs, "-h");
+	OPTDOC_GOPT_DEBUG    (                      HELP("enable debug output (implies -f)"),                    data->foreground = true;        ),
+	OPTDOC_GOPT_FLAG     ("-f"                , HELP("foreground operation"),             DISCARD,           data->foreground = true;        ),
+	OPTDOC_GOPT_FLAG     ("-s"                , HELP("disable multi-threaded-operation"), DISCARD,           data->singlethread = true;      ),
+	OPTDOC_GOPT_OPTPARAM ("fsname=", "%s", "" , NOHELP,                                   KEEP,    NOMEMBER, data->nodefault_subtype = true; ),
+	OPTDOC_GOPT_OPTPARAM ("subtype=", "%s", "", NOHELP,                                   KEEP,    NOMEMBER, data->nodefault_subtype = true; ),
 
-	case KEY_VERSION:
-		helper_version();
-		return 1;
-
-	case FUSE_OPT_KEY_NONOPT:
-		if (!hopts->mountpoint) {
+	OPTDOC_GOPT_POSITIONAL(DISCARD,
+		if (!data->mountpoint) {
 			char mountpoint[PATH_MAX];
 			if (realpath(arg, mountpoint) == NULL) {
 				fprintf(stderr,
@@ -112,16 +75,14 @@ static int fuse_helper_opt_proc(void *data, const char *arg, int key,
 					arg, strerror(errno));
 				return -1;
 			}
-			return fuse_opt_add_opt(&hopts->mountpoint, mountpoint);
+			if (fuse_opt_add_opt(&data->mountpoint, mountpoint) < 1)
+				return -1;
 		} else {
 			fprintf(stderr, "fuse: invalid argument `%s'\n", arg);
 			return -1;
 		}
-
-	default:
-		return 1;
-	}
-}
+	),
+)
 
 static int add_default_subtype(const char *progname, struct fuse_args *args)
 {
@@ -151,7 +112,8 @@ int fuse_parse_cmdline(struct fuse_args *args, char **mountpoint,
 	struct helper_opts hopts;
 
 	memset(&hopts, 0, sizeof(hopts));
-	res = fuse_opt_parse(args, &hopts, fuse_helper_opts,
+	res = fuse_opt_parse(args, &hopts,
+	                     fuse_helper_opt_spec,
 			     fuse_helper_opt_proc);
 	if (res == -1)
 		return -1;

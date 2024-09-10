@@ -28,6 +28,7 @@ libfuse_la_SOURCES = 		\
 	fuse_misc.h		\
 	fuse_mt.c		\
 	fuse_opt.c		\
+	fuse_optdoc.h		\
 	fuse_session.c		\
 	fuse_signals.c		\
 	buffer.c		\

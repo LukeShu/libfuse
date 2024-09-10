@@ -14,6 +14,7 @@
 #include "fuse_i.h"
 #include "fuse_lowlevel.h"
 #include "fuse_opt.h"
+#include "fuse_optdoc.h"
 #include "fuse_misc.h"
 #include "fuse_common_compat.h"
 #include "fuse_compat.h"
@@ -60,22 +61,22 @@ struct fuse_config {
 	double negative_timeout;
 	double attr_timeout;
 	double ac_attr_timeout;
-	int ac_attr_timeout_set;
+	bool ac_attr_timeout_set;
 	int remember;
-	int nopath;
-	int debug;
-	int hard_remove;
-	int use_ino;
-	int readdir_ino;
-	int set_mode;
-	int set_uid;
-	int set_gid;
-	int direct_io;
-	int kernel_cache;
-	int auto_cache;
-	int intr;
+	bool nopath;
+	bool debug;
+	bool hard_remove;
+	bool use_ino;
+	bool readdir_ino;
+	bool set_mode;
+	bool set_uid;
+	bool set_gid;
+	bool direct_io;
+	bool kernel_cache;
+	bool auto_cache;
+	bool intr;
 	int intr_signal;
-	int help;
+	bool help;
 	char *modules;
 };
 
@@ -4434,70 +4435,34 @@ void fuse_set_getcontext_func(struct fuse_context *(*func)(void))
 	/* no-op */
 }
 
-enum {
-	KEY_HELP,
-};
+#define FUSE_SIGNUMSTR(x) FUSE_SIGNUMSTR__(x)
+#define FUSE_SIGNUMSTR__(x) # x
 
-#define FUSE_LIB_OPT(t, p, v) { t, offsetof(struct fuse_config, p), v }
+OPTDOC_GOPTS(fuse_lib, struct fuse_config,
+	OPTDOC_GOPT_HELP(NOHELP, fuse_lib_opt_help(); data->help = true;),
+	OPTDOC_GOPT_DEBUG(NOHELP, data->debug = true;),
 
-static const struct fuse_opt fuse_lib_opts[] = {
-	FUSE_OPT_KEY("-h",		      KEY_HELP),
-	FUSE_OPT_KEY("--help",		      KEY_HELP),
-	FUSE_OPT_KEY("debug",		      FUSE_OPT_KEY_KEEP),
-	FUSE_OPT_KEY("-d",		      FUSE_OPT_KEY_KEEP),
-	FUSE_LIB_OPT("debug",		      debug, 1),
-	FUSE_LIB_OPT("-d",		      debug, 1),
-	FUSE_LIB_OPT("hard_remove",	      hard_remove, 1),
-	FUSE_LIB_OPT("use_ino",		      use_ino, 1),
-	FUSE_LIB_OPT("readdir_ino",	      readdir_ino, 1),
-	FUSE_LIB_OPT("direct_io",	      direct_io, 1),
-	FUSE_LIB_OPT("kernel_cache",	      kernel_cache, 1),
-	FUSE_LIB_OPT("auto_cache",	      auto_cache, 1),
-	FUSE_LIB_OPT("noauto_cache",	      auto_cache, 0),
-	FUSE_LIB_OPT("umask=",		      set_mode, 1),
-	FUSE_LIB_OPT("umask=%o",	      umask, 0),
-	FUSE_LIB_OPT("uid=",		      set_uid, 1),
-	FUSE_LIB_OPT("uid=%d",		      uid, 0),
-	FUSE_LIB_OPT("gid=",		      set_gid, 1),
-	FUSE_LIB_OPT("gid=%d",		      gid, 0),
-	FUSE_LIB_OPT("entry_timeout=%lf",     entry_timeout, 0),
-	FUSE_LIB_OPT("attr_timeout=%lf",      attr_timeout, 0),
-	FUSE_LIB_OPT("ac_attr_timeout=%lf",   ac_attr_timeout, 0),
-	FUSE_LIB_OPT("ac_attr_timeout=",      ac_attr_timeout_set, 1),
-	FUSE_LIB_OPT("negative_timeout=%lf",  negative_timeout, 0),
-	FUSE_LIB_OPT("noforget",              remember, -1),
-	FUSE_LIB_OPT("remember=%u",           remember, 0),
-	FUSE_LIB_OPT("nopath",                nopath, 1),
-	FUSE_LIB_OPT("intr",		      intr, 1),
-	FUSE_LIB_OPT("intr_signal=%d",	      intr_signal, 0),
-	FUSE_LIB_OPT("modules=%s",	      modules, 0),
-	FUSE_OPT_END
-};
-
-static void fuse_lib_help(void)
-{
-	fprintf(stderr,
-"    -o hard_remove         immediate removal (don't hide files)\n"
-"    -o use_ino             let filesystem set inode numbers\n"
-"    -o readdir_ino         try to fill in d_ino in readdir\n"
-"    -o direct_io           use direct I/O\n"
-"    -o kernel_cache        cache files in kernel\n"
-"    -o [no]auto_cache      enable caching based on modification times (off)\n"
-"    -o umask=M             set file permissions (octal)\n"
-"    -o uid=N               set file owner\n"
-"    -o gid=N               set file group\n"
-"    -o entry_timeout=T     cache timeout for names (1.0s)\n"
-"    -o negative_timeout=T  cache timeout for deleted names (0.0s)\n"
-"    -o attr_timeout=T      cache timeout for attributes (1.0s)\n"
-"    -o ac_attr_timeout=T   auto cache timeout for attributes (attr_timeout)\n"
-"    -o noforget            never forget cached inodes\n"
-"    -o remember=T          remember cached inodes for T seconds (0s)\n"
-"    -o nopath              don't supply path if not necessary\n"
-"    -o intr                allow requests to be interrupted\n"
-"    -o intr_signal=NUM     signal to send on interrupt (%i)\n"
-"    -o modules=M1[:M2...]  names of modules to push onto filesystem stack\n"
-"\n", FUSE_DEFAULT_INTR_SIGNAL);
-}
+	/*TDOC_GOPT_OPTXXXXX ("name"                          HELP("description"),                                                                DISCARD, member          , action                           ),*/
+	OPTDOC_GOPT_OPT      ("hard_remove",                  HELP("immediate removal (don't hide files)"),                                       DISCARD,                   data->hard_remove         = true;),
+	OPTDOC_GOPT_OPT      ("use_ino",                      HELP("let filesystem set inode numbers"),                                           DISCARD,                   data->use_ino             = true;),
+	OPTDOC_GOPT_OPT      ("readdir_ino",                  HELP("try to fill in d_ino in readdir"),                                            DISCARD,                   data->readdir_ino         = true;),
+	OPTDOC_GOPT_OPT      ("direct_io",                    HELP("use direct I/O"),                                                             DISCARD,                   data->direct_io           = true;),
+	OPTDOC_GOPT_OPT      ("kernel_cache",                 HELP("cache files in kernel"),                                                      DISCARD,                   data->kernel_cache        = true;),
+	OPTDOC_GOPT_OPTBOOL  ("no", "auto_cache",             HELP("enable caching based on modification times (off)"),                           DISCARD, auto_cache      ,                                  ),
+	OPTDOC_GOPT_OPTPARAM ("umask", "%o", "N",             HELP("set file permissions (octal)"),                                               DISCARD, umask           , data->set_mode            = true;),
+	OPTDOC_GOPT_OPTPARAM ("uid", "%d", "N",               HELP("set file owner"),                                                             DISCARD, uid             , data->set_uid             = true;),
+	OPTDOC_GOPT_OPTPARAM ("gid", "%d", "N",               HELP("set file group"),                                                             DISCARD, gid             , data->set_gid             = true;),
+	OPTDOC_GOPT_OPTPARAM ("entry_timeout", "%lf", "T",    HELP("cache timeout for names (1.0s)"),                                             DISCARD, entry_timeout   ,                                  ),
+	OPTDOC_GOPT_OPTPARAM ("negative_timeout", "%lf", "T", HELP("cache timeout for deleted names (0.0s)"),                                     DISCARD, negative_timeout,                                  ),
+	OPTDOC_GOPT_OPTPARAM ("attr_timeout", "%lf", "T",     HELP("cache timeout for attributes (1.0s)"),                                        DISCARD, attr_timeout    ,                                  ),
+	OPTDOC_GOPT_OPTPARAM ("ac_attr_timeout", "%lf", "T",  HELP("auto cache timeout for attributes (attr_timeout)"),                           DISCARD, ac_attr_timeout , data->ac_attr_timeout_set = true;),
+	OPTDOC_GOPT_OPT      ("noforget",                     HELP("never forget cached inodes"),                                                 DISCARD,                   data->remember            = -1;  ),
+	OPTDOC_GOPT_OPTPARAM ("remember", "%u", "T",          HELP("remember cached inodes for T seconds (0s)"),                                  DISCARD, remember        ,                                  ),
+	OPTDOC_GOPT_OPT      ("nopath",                       HELP("don't supply path if not necessary"),                                         DISCARD,                   data->nopath              = true;),
+	OPTDOC_GOPT_OPT      ("intr",                         HELP("allow requests to be interrupted"),                                           DISCARD,                   data->intr                = true;),
+	OPTDOC_GOPT_OPTPARAM ("intr_signal", "%d", "NUM",     HELP("signal to send on interrupt (" FUSE_SIGNUMSTR(FUSE_DEFAULT_INTR_SIGNAL) ")"), DISCARD, intr_signal     ,                                  ),
+	OPTDOC_GOPT_OPTPARAM ("modules", "%s", "M1[:M2...]",  HELP("names of modules to push onto filesystem stack"),                             DISCARD, modules         ,                                  ),
+)
 
 static void fuse_lib_help_modules(void)
 {
@@ -4519,24 +4484,10 @@ static void fuse_lib_help_modules(void)
 	pthread_mutex_unlock(&fuse_context_lock);
 }
 
-static int fuse_lib_opt_proc(void *data, const char *arg, int key,
-			     struct fuse_args *outargs)
-{
-	(void) arg; (void) outargs;
-
-	if (key == KEY_HELP) {
-		struct fuse_config *conf = (struct fuse_config *) data;
-		fuse_lib_help();
-		conf->help = 1;
-	}
-
-	return 1;
-}
-
 int fuse_is_lib_option(const char *opt)
 {
 	return fuse_lowlevel_is_lib_option(opt) ||
-		fuse_opt_match(fuse_lib_opts, opt);
+		fuse_opt_match(fuse_lib_opt_spec, opt);
 }
 
 static int fuse_init_intr_signal(int signum, int *installed)
@@ -4707,7 +4658,8 @@ struct fuse *fuse_new_common(struct fuse_chan *ch, struct fuse_args *args,
 	init_list_head(&f->full_slabs);
 	init_list_head(&f->lru_table);
 
-	if (fuse_opt_parse(args, &f->conf, fuse_lib_opts,
+	if (fuse_opt_parse(args, &f->conf,
+	                   fuse_lib_opt_spec,
 			   fuse_lib_opt_proc) == -1)
 		goto out_free_fs;
 
