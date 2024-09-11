@@ -79,13 +79,20 @@ struct fuse_opt {
 
 	/**
 	 * Offset of variable within 'data' parameter of fuse_opt_parse()
-	 * or -1
+	 * or -1.
+	 *
+	 * The size of the value pointed at by data+offset is assumed
+	 * to be:
+	 *  - the option does not take a parameter: sizeof(int)
+	 *  - takes a parameter, but there is no %conv specifier: sizeof(int)
+	 *  - takes a parameter, and the %conv specifier is "%s": sizeof(char*)
+	 *  - takes a parameter, any other %conv specifier: sscanf()'s interpretation of the specifier
 	 */
 	unsigned long offset;
 
 	/**
 	 * Value to set the variable to, or to be passed as 'key' to the
-	 * processing function.	 Ignored if template has a format
+	 * processing function.	 Ignored if template has a "=%conv" suffix.
 	 */
 	int value;
 };

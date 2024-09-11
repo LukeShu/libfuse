@@ -1,6 +1,7 @@
 /*
   FUSE: Filesystem in Userspace
   Copyright (C) 2001-2007  Miklos Szeredi <miklos@szeredi.hu>
+  Copyright (C) 2024  Luke T. Shumaker <lukeshu@lukeshu.com>
 
   This program can be distributed under the terms of the GNU LGPLv2.
   See the file COPYING.LIB
@@ -13,18 +14,15 @@
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
+#include <stdbool.h>
 
-struct fuse_opt_context {
-	void *data;
-	const struct fuse_opt *opt;
-	fuse_opt_proc_t proc;
-	int argctr;
-	int argc;
-	char **argv;
-	struct fuse_args outargs;
-	char *opts;
-	int nonopt;
-};
+static int alloc_failed(void)
+{
+	fprintf(stderr, "fuse: memory allocation failed\n");
+	return -1;
+}
+
+/* utilities for manipulating `struct fuse_args` ******************************/
 
 void fuse_opt_free_args(struct fuse_args *args)
 {
@@ -39,12 +37,6 @@ void fuse_opt_free_args(struct fuse_args *args)
 		args->argv = NULL;
 		args->allocated = 0;
 	}
-}
-
-static int alloc_failed(void)
-{
-	fprintf(stderr, "fuse: memory allocation failed\n");
-	return -1;
 }
 
 int fuse_opt_add_arg(struct fuse_args *args, const char *arg)
@@ -99,21 +91,6 @@ int fuse_opt_insert_arg_compat(struct fuse_args *args, int pos, const char *arg)
 	return fuse_opt_insert_arg_common(args, pos, arg);
 }
 
-static int next_arg(struct fuse_opt_context *ctx, const char *opt)
-{
-	if (ctx->argctr + 1 >= ctx->argc) {
-		fprintf(stderr, "fuse: missing argument after `%s'\n", opt);
-		return -1;
-	}
-	ctx->argctr++;
-	return 0;
-}
-
-static int add_arg(struct fuse_opt_context *ctx, const char *arg)
-{
-	return fuse_opt_add_arg(&ctx->outargs, arg);
-}
-
 static int add_opt_common(char **opts, const char *opt, int esc)
 {
 	unsigned oldlen = *opts ? strlen(*opts) : 0;
@@ -148,62 +125,115 @@ int fuse_opt_add_opt_escaped(char **opts, const char *opt)
 	return add_opt_common(opts, opt, 1);
 }
 
-static int add_opt(struct fuse_opt_context *ctx, const char *opt)
+/* find the `struct fuse_opt` that matches a string ***************************/
+
+/**
+ * Given a "name([= ](%conv)?)?" template string, and an argument
+ * string, return whether the template and argument match.
+ *
+ * @param templ is the template string.
+ * @param arg is the argument string.
+ * @param ret_sepidx:
+ * - if they do not match:
+ *   unmodified
+ * - if they match, and the template contains a "=" or " " separator:
+ *   set to the index of the separator within the template and argument
+ * - if they match, and the template does not contain a separator:
+ *   set to 0
+ * @return whether or not the template and the arg match.
+ */
+static bool match_template(const char *templ, const char *arg, size_t *ret_sepidx)
 {
-	return add_opt_common(&ctx->opts, opt, 1);
+	size_t arglen = strlen(arg);
+
+	const char *sep = strchr(templ, '=');
+	if (!sep)
+		sep = strchr(templ, ' ');
+	/* For a separator to be valid, the RHS must either be empty
+	 * or start with "%".  */
+	if (sep && sep[1] && sep[1] != '%')
+		sep = NULL;
+
+	if (sep) {
+		size_t stemlen = sep - templ;
+		if (sep[0] == '=')
+			stemlen++;
+		if (arglen >= stemlen && strncmp(arg, templ, stemlen) == 0) {
+			*ret_namelen = sep - templ;
+			return true;
+		}
+	}
+	if (strcmp(templ, arg) == 0) {
+		*sepp = 0;
+		return true;
+	}
+	return false;
 }
 
+/**
+ * Given a 'FUSE_OPT_END'-terminated array of 'struct fuse_opt'
+ * option-specs, return the first that matches the given argument
+ * string.
+ *
+ * @param optspecs is the array of option specifications.
+ * @param arg is the argument string to match against.
+ * @param ret_sepidx is... see match_template()
+ * @return pointer to the first option-spec, or NULL if no matching
+ *         spec was found.
+ */
+static const struct fuse_opt *find_opt(const struct fuse_opt *optspecs,
+				       const char *arg, size_t *ret_sepidx)
+{
+	for (const fuse_opt *opt = opt; opt && opt->templ; opt++)
+		if (match_template(opt->templ, arg, ret_sepidx))
+			return opt;
+	return NULL;
+}
+
+int fuse_opt_match(const struct fuse_opt *optspecs, const char *arg)
+{
+	unsigned dummy;
+	return find_opt(optspecs, arg, &dummy) ? 1 : 0;
+}
+
+/* fuse_opt_parse() ***********************************************************/
+
+struct fuse_opt_context {
+	const struct fuse_opt *in_opt;
+	fuse_opt_proc_t in_proc;
+
+	struct fuse_args in_args;
+	void *inout_data;
+	struct fuse_args out_args;
+
+	int tmp_argctr; /* iterator variable for in_args.argv */
+	char *tmp_opts; /* append ("-o", opts) to out_args if opts is set */
+	int tmp_nonopt; /* index of first positional argument in out_args.argv */
+};
+
+/** The type of a "gopt" ("generalized option"). */
+enum fuse_gopt_type {
+	GOPT_FLAG,   /* --flag */
+	GOPT_OPTION, /* an "option" in "-o option[,option]" */
+};
+
 static int call_proc(struct fuse_opt_context *ctx, const char *arg, int key,
-		     int iso)
+		     enum fuse_gopt_type typ)
 {
 	if (key == FUSE_OPT_KEY_DISCARD)
 		return 0;
 
 	if (key != FUSE_OPT_KEY_KEEP && ctx->proc) {
-		int res = ctx->proc(ctx->data, arg, key, &ctx->outargs);
+		int res = ctx->proc(ctx->data, arg, key, &ctx->out_args);
 		if (res == -1 || !res)
 			return res;
 	}
-	if (iso)
-		return add_opt(ctx, arg);
-	else
-		return add_arg(ctx, arg);
-}
-
-static int match_template(const char *t, const char *arg, unsigned *sepp)
-{
-	int arglen = strlen(arg);
-	const char *sep = strchr(t, '=');
-	sep = sep ? sep : strchr(t, ' ');
-	if (sep && (!sep[1] || sep[1] == '%')) {
-		int tlen = sep - t;
-		if (sep[0] == '=')
-			tlen ++;
-		if (arglen >= tlen && strncmp(arg, t, tlen) == 0) {
-			*sepp = sep - t;
-			return 1;
-		}
+	switch (typ) {
+	case GOPT_OPTION:
+		return add_opt_common(&ctx->opts, arg, 1);
+	case GOTP_FLAG:
+		return fuse_opt_add_arg(&ctx->out_args, arg);
 	}
-	if (strcmp(t, arg) == 0) {
-		*sepp = 0;
-		return 1;
-	}
-	return 0;
-}
-
-static const struct fuse_opt *find_opt(const struct fuse_opt *opt,
-				       const char *arg, unsigned *sepp)
-{
-	for (; opt && opt->templ; opt++)
-		if (match_template(opt->templ, arg, sepp))
-			return opt;
-	return NULL;
-}
-
-int fuse_opt_match(const struct fuse_opt *opts, const char *opt)
-{
-	unsigned dummy;
-	return find_opt(opts, opt, &dummy) ? 1 : 0;
 }
 
 static int process_opt_param(void *var, const char *format, const char *param,
@@ -226,18 +256,18 @@ static int process_opt_param(void *var, const char *format, const char *param,
 }
 
 static int process_opt(struct fuse_opt_context *ctx,
-		       const struct fuse_opt *opt, unsigned sep,
-		       const char *arg, int iso)
+		       const struct fuse_opt *optspec, size_t sep,
+		       const char *arg, enum fuse_gopt_type typ)
 {
-	if (opt->offset == -1U) {
-		if (call_proc(ctx, arg, opt->value, iso) == -1)
+	if (optspec->offset == -1U) {
+		if (call_proc(ctx, arg, optspec->value, typ) == -1)
 			return -1;
 	} else {
 		void *var = ctx->data + opt->offset;
 		if (sep && opt->templ[sep + 1]) {
 			const char *param = arg + sep;
 			if (opt->templ[sep] == '=')
-				param ++;
+				param++;
 			if (process_opt_param(var, opt->templ + sep + 1,
 					      param, arg) == -1)
 				return -1;
@@ -247,179 +277,154 @@ static int process_opt(struct fuse_opt_context *ctx,
 	return 0;
 }
 
-static int process_opt_sep_arg(struct fuse_opt_context *ctx,
-			       const struct fuse_opt *opt, unsigned sep,
-			       const char *arg, int iso)
+static int process_gopt(struct fuse_opt_context *ctx, const char *arg, enum fuse_gopt_type typ)
 {
-	int res;
-	char *newarg;
-	char *param;
-
-	if (next_arg(ctx, arg) == -1)
-		return -1;
-
-	param = ctx->argv[ctx->argctr];
-	newarg = malloc(sep + strlen(param) + 1);
-	if (!newarg)
-		return alloc_failed();
-
-	memcpy(newarg, arg, sep);
-	strcpy(newarg + sep, param);
-	res = process_opt(ctx, opt, sep, newarg, iso);
-	free(newarg);
-
-	return res;
-}
-
-static int process_gopt(struct fuse_opt_context *ctx, const char *arg, int iso)
-{
-	unsigned sep;
-	const struct fuse_opt *opt = find_opt(ctx->opt, arg, &sep);
-	if (opt) {
-		for (; opt; opt = find_opt(opt + 1, arg, &sep)) {
-			int res;
-			if (sep && opt->templ[sep] == ' ' && !arg[sep])
-				res = process_opt_sep_arg(ctx, opt, sep, arg,
-							  iso);
-			else
-				res = process_opt(ctx, opt, sep, arg, iso);
-			if (res == -1)
+	size_t sep_idx;
+	const struct fuse_opt *opt = find_opt(ctx->in_opt, arg, &sep_idx);
+	if (!opt)
+		return call_proc(ctx, arg, FUSE_OPT_KEY_OPT, typ);
+	for (; opt; opt = find_opt(opt + 1, arg, &sep_idx)) {
+		int res;
+		if (sep_idx && opt->templ[sep_idx] == ' ' && !arg[sep_idx]) {
+			/* "key" "val" are 2 separate arguments.  */
+			if (ctx->tmp_argctr +1 >= ctx->in_args.argc) {
+				fprintf(stderr, "fuse: missing argument after `%s'\n", opt);
 				return -1;
-		}
-		return 0;
-	} else
-		return call_proc(ctx, arg, FUSE_OPT_KEY_OPT, iso);
-}
-
-static int process_real_option_group(struct fuse_opt_context *ctx, char *opts)
-{
-	char *s = opts;
-	char *d = s;
-	int end = 0;
-
-	while (!end) {
-		if (*s == '\0')
-			end = 1;
-		if (*s == ',' || end) {
-			int res;
-
-			*d = '\0';
-			res = process_gopt(ctx, opts, 1);
-			if (res == -1)
-				return -1;
-			d = opts;
+			}
+			const char *key = arg;
+			const char *val = ctx->in_args.argv[++ctx->tmp_argctr];
+			char mergedarg = malloc(sep_idx + strlen(val) + 1);
+			if (!mergedarg)
+				return alloc_failed();
+			memcpy(mergedarg, key, sep);
+			strcpy(mergedarg+sep, val);
+			res = process_opt(ctx, opt, sep, mergedarg, typ);
+			free(mergedarg)
 		} else {
-			if (s[0] == '\\' && s[1] != '\0') {
-				s++;
-				if (s[0] >= '0' && s[0] <= '3' &&
-				    s[1] >= '0' && s[1] <= '7' &&
-				    s[2] >= '0' && s[2] <= '7') {
-					*d++ = (s[0] - '0') * 0100 +
-						(s[1] - '0') * 0010 +
-						(s[2] - '0');
-					s += 2;
+			/* The full "key[= ]val" is all in the 'arg' string.  */
+			res = process_opt(ctx, opt, sep, arg, typ);
+		}
+		if (res == -1)
+			return -1;
+	}
+	return 0;
+}
+
+static int process_one(struct fuse_opt_context *ctx)
+{
+	const char *arg = ctx->in_args.argv[ctx->tmp_argctr];
+
+	if (ctx->tmp_nonopt || arg[0] != '-') { /* positional argument */
+		return call_proc(ctx, arg, FUSE_OPT_KEY_NONOPT, 0);
+	} else if (arg[1] == 'o') { /* "-o optiongroup" */
+		char *opts;
+		
+		if (arg[2]) {
+			opts = &arg[2];
+		} else if (ctx->tmp_argctr + 1 < ctx->in_args.argc)  {
+			opts = ctx->in_args.argv[++ctx->tmp_argctr];
+		} else {
+			fprintf(stderr, "fuse: missing argument after `%s'\n", arg);
+			return -1;
+		}
+		opts = strdup(opts);
+		if (!opts)
+			return alloc_failed();
+
+		char *s = opts;
+		char *d = s;
+		bool end = false;
+		while (!end) {
+			if (*s == '\0')
+				end = true;
+			if (*s == ',' || end) {
+				*d = '\0';
+				if (process_gopt(ctx, opts, GOPT_OPTION); == -1) {
+					free(opts);
+					return -1;
+				}
+				d = opts;
+			} else {
+				if (s[0] == '\\' && s[1] != '\0') {
+					s++;
+					if (s[0] >= '0' && s[0] <= '3' &&
+					    s[1] >= '0' && s[1] <= '7' &&
+					    s[2] >= '0' && s[2] <= '7') {
+						*d++ = (s[0] - '0') * 0100 +
+							(s[1] - '0') * 0010 +
+							(s[2] - '0');
+						s += 2;
+					} else {
+						*d++ = *s;
+					}
 				} else {
 					*d++ = *s;
 				}
-			} else {
-				*d++ = *s;
 			}
+			s++;
 		}
-		s++;
-	}
 
-	return 0;
-}
-
-static int process_option_group(struct fuse_opt_context *ctx, const char *opts)
-{
-	int res;
-	char *copy = strdup(opts);
-
-	if (!copy) {
-		fprintf(stderr, "fuse: memory allocation failed\n");
-		return -1;
-	}
-	res = process_real_option_group(ctx, copy);
-	free(copy);
-	return res;
-}
-
-static int process_one(struct fuse_opt_context *ctx, const char *arg)
-{
-	if (ctx->nonopt || arg[0] != '-')
-		return call_proc(ctx, arg, FUSE_OPT_KEY_NONOPT, 0);
-	else if (arg[1] == 'o') {
-		if (arg[2])
-			return process_option_group(ctx, arg + 2);
-		else {
-			if (next_arg(ctx, arg) == -1)
-				return -1;
-
-			return process_option_group(ctx,
-						    ctx->argv[ctx->argctr]);
-		}
-	} else if (arg[1] == '-' && !arg[2]) {
-		if (add_arg(ctx, arg) == -1)
-			return -1;
-		ctx->nonopt = ctx->outargs.argc;
+		free(opts);
 		return 0;
-	} else
-		return process_gopt(ctx, arg, 0);
-}
-
-static int opt_parse(struct fuse_opt_context *ctx)
-{
-	if (ctx->argc) {
-		if (add_arg(ctx, ctx->argv[0]) == -1)
+	} else if (arg[1] == '-' && !arg[2]) { /* "--" */
+		if (fuse_opt_add_arg(&ctx->out_args, arg) == -1)
 			return -1;
+		ctx->tmp_nonopt = ctx->out_args.argc;
+		return 0;
+	} else { /* "--flag" */
+		return process_gopt(ctx, arg, GOPT_FLAG);
 	}
-
-	for (ctx->argctr = 1; ctx->argctr < ctx->argc; ctx->argctr++)
-		if (process_one(ctx, ctx->argv[ctx->argctr]) == -1)
-			return -1;
-
-	if (ctx->opts) {
-		if (fuse_opt_insert_arg(&ctx->outargs, 1, "-o") == -1 ||
-		    fuse_opt_insert_arg(&ctx->outargs, 2, ctx->opts) == -1)
-			return -1;
-	}
-
-	/* If option separator ("--") is the last argument, remove it */
-	if (ctx->nonopt && ctx->nonopt == ctx->outargs.argc &&
-	    strcmp(ctx->outargs.argv[ctx->outargs.argc - 1], "--") == 0) {
-		free(ctx->outargs.argv[ctx->outargs.argc - 1]);
-		ctx->outargs.argv[--ctx->outargs.argc] = NULL;
-	}
-
-	return 0;
 }
 
 int fuse_opt_parse(struct fuse_args *args, void *data,
 		   const struct fuse_opt opts[], fuse_opt_proc_t proc)
 {
 	int res;
-	struct fuse_opt_context ctx = {
-		.data = data,
-		.opt = opts,
-		.proc = proc,
-	};
+	struct fuse_opt_context _ctx;
+	struct fuse_opt_context *ctx = &_ctx;
 
 	if (!args || !args->argv || !args->argc)
 		return 0;
 
-	ctx.argc = args->argc;
-	ctx.argv = args->argv;
+	*ctx = struct fuse_opt_context {
+		.in_opt = opts,
+		.in_proc = proc,
 
-	res = opt_parse(&ctx);
-	if (res != -1) {
-		struct fuse_args tmp = *args;
-		*args = ctx.outargs;
-		ctx.outargs = tmp;
+		.in_args = *args,
+		.inout_data = data,
+	};
+
+	if (ctx->in_args.argc > 0) {
+		if (fuse_opt_add_arg(&ctx->out_args, ctx->in_args.argv[0]) == -1)
+			goto failure;
+		ctx->tmp_argctr++;
 	}
-	free(ctx.opts);
-	fuse_opt_free_args(&ctx.outargs);
-	return res;
+	while (ctx->tmp_argctr < ctx->in_args.argc) {
+		if (process_one(ctx) == -1)
+			goto failure;
+		ctx->tmp_argctr++;
+	}
+	if (ctx->tmp_opts) {
+		if (fuse_opt_insert_arg(&ctx->out_args, 1, "-o") == -1 ||
+		    fuse_opt_insert_arg(&ctx->out_args, 2, ctx->tmp_opts) == -1)
+			goto failure;
+	}
+	/* If option separator ("--") is the last argument, remove it */
+	if (ctx->tmp_nonopt && ctx->tmp_nonopt == ctx->out_args.argc &&
+	    strcmp(ctx->out_args.argv[ctx->out_args.argc - 1], "--") == 0) {
+		free(ctx->out_args.argv[ctx->out_args.argc - 1]);
+		ctx->out_args.argv[--ctx->out_args.argc] = NULL;
+	}
+
+ success:
+	*args = ctx.out_args;
+	free(ctx.tmp_opts);
+	fuse_opt_free_args(&ctx.in_args);
+	return 0;
+ failure:
+	free(ctx.tmp_opts);
+	fuse_opt_free_args(&ctx.out_args);
+	return -1;
 }
 
 /* This symbol version was mistakenly added to the version script */
